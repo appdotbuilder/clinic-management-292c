@@ -1,118 +1,193 @@
+import { db } from '../db';
+import { usersTable, sessionsTable } from '../db/schema';
 import { type CreateUserInput, type UpdateUserInput, type User } from '../schema';
+import { eq, or } from 'drizzle-orm';
+import { createHash, randomBytes, pbkdf2Sync } from 'crypto';
+
+// Helper function to hash passwords
+function hashPassword(password: string): string {
+  const salt = randomBytes(16).toString('hex');
+  const hash = pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return salt + ':' + hash;
+}
+
+// Helper function to verify passwords
+export function verifyPassword(password: string, storedHash: string): boolean {
+  const [salt, hash] = storedHash.split(':');
+  if (!salt || !hash) return false;
+  
+  const verifyHash = pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return hash === verifyHash;
+}
 
 export async function createUser(input: CreateUserInput): Promise<User> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to:
-    // 1. Hash the password using bcrypt or similar
-    // 2. Check if username/email already exists
-    // 3. Insert new user into the database
-    // 4. Return the created user (without password_hash)
-    
-    return {
-        id: Math.floor(Math.random() * 1000), // Mock ID
+  try {
+    // Check if username or email already exists
+    const existingUsers = await db.select()
+      .from(usersTable)
+      .where(or(
+        eq(usersTable.username, input.username),
+        eq(usersTable.email, input.email)
+      ))
+      .execute();
+
+    if (existingUsers.length > 0) {
+      const existingUser = existingUsers[0];
+      if (existingUser.username === input.username) {
+        throw new Error('Username already exists');
+      }
+      if (existingUser.email === input.email) {
+        throw new Error('Email already exists');
+      }
+    }
+
+    // Hash the password
+    const password_hash = hashPassword(input.password);
+
+    // Insert new user into database
+    const result = await db.insert(usersTable)
+      .values({
         username: input.username,
         email: input.email,
-        password_hash: 'hashed-password', // This should be the actual hash
+        password_hash,
         role: input.role,
         full_name: input.full_name,
         is_active: input.is_active,
-        created_at: new Date(),
         updated_at: new Date()
-    };
+      })
+      .returning()
+      .execute();
+
+    return result[0];
+  } catch (error) {
+    console.error('User creation failed:', error);
+    throw error;
+  }
 }
 
 export async function updateUser(input: UpdateUserInput): Promise<User> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to:
-    // 1. Check if user exists
-    // 2. Hash new password if provided
-    // 3. Update user fields in the database
-    // 4. Return updated user data
-    
-    return {
-        id: input.id,
-        username: input.username || 'existing-username',
-        email: input.email || 'existing@email.com',
-        password_hash: 'existing-hash',
-        role: input.role || 'admin',
-        full_name: input.full_name || 'Existing User',
-        is_active: input.is_active !== undefined ? input.is_active : true,
-        created_at: new Date(),
-        updated_at: new Date()
+  try {
+    // Check if user exists
+    const existingUsers = await db.select()
+      .from(usersTable)
+      .where(eq(usersTable.id, input.id))
+      .execute();
+
+    if (existingUsers.length === 0) {
+      throw new Error('User not found');
+    }
+
+    // Check for username/email conflicts if they are being updated
+    if (input.username || input.email) {
+      const conditions = [];
+      if (input.username) {
+        conditions.push(eq(usersTable.username, input.username));
+      }
+      if (input.email) {
+        conditions.push(eq(usersTable.email, input.email));
+      }
+
+      const conflictingUsers = await db.select()
+        .from(usersTable)
+        .where(or(...conditions))
+        .execute();
+
+      for (const user of conflictingUsers) {
+        // Skip if it's the same user being updated
+        if (user.id === input.id) continue;
+
+        if (input.username && user.username === input.username) {
+          throw new Error('Username already exists');
+        }
+        if (input.email && user.email === input.email) {
+          throw new Error('Email already exists');
+        }
+      }
+    }
+
+    // Prepare update values
+    const updateValues: any = {
+      updated_at: new Date()
     };
+
+    if (input.username !== undefined) updateValues.username = input.username;
+    if (input.email !== undefined) updateValues.email = input.email;
+    if (input.role !== undefined) updateValues.role = input.role;
+    if (input.full_name !== undefined) updateValues.full_name = input.full_name;
+    if (input.is_active !== undefined) updateValues.is_active = input.is_active;
+
+    // Hash new password if provided
+    if (input.password !== undefined) {
+      updateValues.password_hash = hashPassword(input.password);
+    }
+
+    // Update user in database
+    const result = await db.update(usersTable)
+      .set(updateValues)
+      .where(eq(usersTable.id, input.id))
+      .returning()
+      .execute();
+
+    return result[0];
+  } catch (error) {
+    console.error('User update failed:', error);
+    throw error;
+  }
 }
 
 export async function getUser(id: number): Promise<User | null> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to:
-    // 1. Query user by ID from the database
-    // 2. Return user data or null if not found
-    
-    if (id <= 0) return null;
-    
-    return {
-        id: id,
-        username: 'user' + id,
-        email: 'user' + id + '@example.com',
-        password_hash: 'hashed-password',
-        role: 'admin',
-        full_name: 'User ' + id,
-        is_active: true,
-        created_at: new Date(),
-        updated_at: new Date()
-    };
+  try {
+    const users = await db.select()
+      .from(usersTable)
+      .where(eq(usersTable.id, id))
+      .execute();
+
+    return users.length > 0 ? users[0] : null;
+  } catch (error) {
+    console.error('Get user failed:', error);
+    throw error;
+  }
 }
 
 export async function getAllUsers(): Promise<User[]> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to:
-    // 1. Fetch all users from the database
-    // 2. Return array of users (possibly with pagination in future)
-    
-    return [
-        {
-            id: 1,
-            username: 'admin',
-            email: 'admin@example.com',
-            password_hash: 'hashed-password',
-            role: 'admin',
-            full_name: 'Administrator',
-            is_active: true,
-            created_at: new Date(),
-            updated_at: new Date()
-        },
-        {
-            id: 2,
-            username: 'dokter1',
-            email: 'dokter1@example.com',
-            password_hash: 'hashed-password',
-            role: 'dokter',
-            full_name: 'Dr. Smith',
-            is_active: true,
-            created_at: new Date(),
-            updated_at: new Date()
-        },
-        {
-            id: 3,
-            username: 'resepsionis1',
-            email: 'resepsionis1@example.com',
-            password_hash: 'hashed-password',
-            role: 'resepsionis',
-            full_name: 'Receptionist Johnson',
-            is_active: true,
-            created_at: new Date(),
-            updated_at: new Date()
-        }
-    ];
+  try {
+    const users = await db.select()
+      .from(usersTable)
+      .execute();
+
+    return users;
+  } catch (error) {
+    console.error('Get all users failed:', error);
+    throw error;
+  }
 }
 
 export async function deleteUser(id: number): Promise<boolean> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to:
-    // 1. Check if user exists
-    // 2. Remove user from database (or mark as inactive)
-    // 3. Clean up related sessions
-    // 4. Return success status
-    
-    return id > 0;
+  try {
+    // Check if user exists
+    const existingUsers = await db.select()
+      .from(usersTable)
+      .where(eq(usersTable.id, id))
+      .execute();
+
+    if (existingUsers.length === 0) {
+      return false;
+    }
+
+    // Delete related sessions first (cascade should handle this, but being explicit)
+    await db.delete(sessionsTable)
+      .where(eq(sessionsTable.user_id, id))
+      .execute();
+
+    // Delete user from database
+    const result = await db.delete(usersTable)
+      .where(eq(usersTable.id, id))
+      .returning()
+      .execute();
+
+    return result.length > 0;
+  } catch (error) {
+    console.error('User deletion failed:', error);
+    throw error;
+  }
 }

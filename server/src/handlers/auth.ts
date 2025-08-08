@@ -1,99 +1,159 @@
+import { db } from '../db';
+import { usersTable, sessionsTable } from '../db/schema';
 import { type LoginInput, type LoginResponse, type CreateSessionInput, type VerifySessionInput, type SessionResponse } from '../schema';
-import { type User } from '../db/schema';
+import { eq, and, gte } from 'drizzle-orm';
+import { randomUUID } from 'crypto';
 
 export async function login(input: LoginInput): Promise<LoginResponse> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to:
-    // 1. Validate user credentials against the database
-    // 2. Hash the input password and compare with stored password_hash
-    // 3. Create a new session if credentials are valid
-    // 4. Return appropriate redirect path based on user role
-    // 5. Handle inactive users and invalid credentials
-    
-    const mockUser = {
-        id: 1,
-        username: input.username,
-        email: 'user@example.com',
-        role: 'admin' as const,
-        full_name: 'Mock User',
-        is_active: true
-    };
-    
-    // Mock authentication - replace with real implementation
-    if (input.username === 'admin' && input.password === 'password') {
-        return {
-            success: true,
-            user: mockUser,
-            redirectPath: '/admin/dashboard',
-            message: null
-        };
-    } else if (input.username === 'dokter' && input.password === 'password') {
-        return {
-            success: true,
-            user: { ...mockUser, role: 'dokter' as const },
-            redirectPath: '/dokter/dashboard',
-            message: null
-        };
-    } else if (input.username === 'resepsionis' && input.password === 'password') {
-        return {
-            success: true,
-            user: { ...mockUser, role: 'resepsionis' as const },
-            redirectPath: '/resepsionis/dashboard',
-            message: null
-        };
-    }
-    
-    return {
+  try {
+    // Find user by username
+    const users = await db.select()
+      .from(usersTable)
+      .where(eq(usersTable.username, input.username))
+      .execute();
+
+    if (users.length === 0) {
+      return {
         success: false,
         user: null,
         redirectPath: null,
         message: 'Invalid credentials'
+      };
+    }
+
+    const user = users[0];
+
+    // Check if user is active
+    if (!user.is_active) {
+      return {
+        success: false,
+        user: null,
+        redirectPath: null,
+        message: 'Account is deactivated'
+      };
+    }
+
+    // Verify password using Bun's built-in password hashing
+    const isValidPassword = await Bun.password.verify(input.password, user.password_hash);
+    
+    if (!isValidPassword) {
+      return {
+        success: false,
+        user: null,
+        redirectPath: null,
+        message: 'Invalid credentials'
+      };
+    }
+
+    // Determine redirect path based on role
+    const redirectPaths = {
+      admin: '/admin/dashboard',
+      dokter: '/dokter/dashboard',
+      resepsionis: '/resepsionis/dashboard'
     };
+
+    return {
+      success: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        full_name: user.full_name,
+        is_active: user.is_active
+      },
+      redirectPath: redirectPaths[user.role],
+      message: null
+    };
+  } catch (error) {
+    console.error('Login failed:', error);
+    throw error;
+  }
 }
 
 export async function createSession(input: CreateSessionInput): Promise<string> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to:
-    // 1. Generate a unique session ID (UUID)
-    // 2. Store the session in the database with user_id and expiration
-    // 3. Return the session ID for client storage
-    
-    return 'mock-session-id-' + Date.now();
+  try {
+    // Generate unique session ID
+    const sessionId = randomUUID();
+
+    // Insert session into database
+    await db.insert(sessionsTable)
+      .values({
+        id: sessionId,
+        user_id: input.user_id,
+        expires_at: input.expires_at
+      })
+      .execute();
+
+    return sessionId;
+  } catch (error) {
+    console.error('Session creation failed:', error);
+    throw error;
+  }
 }
 
 export async function verifySession(input: VerifySessionInput): Promise<SessionResponse> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to:
-    // 1. Check if session exists and is not expired
-    // 2. Retrieve associated user information
-    // 3. Return session validity and user data
-    
-    // Mock session verification - replace with real implementation
-    if (input.session_id.startsWith('mock-session-id-')) {
-        return {
-            valid: true,
-            user: {
-                id: 1,
-                username: 'admin',
-                email: 'admin@example.com',
-                role: 'admin',
-                full_name: 'Admin User',
-                is_active: true
-            }
-        };
-    }
-    
-    return {
+  try {
+    // Query session with user information
+    const results = await db.select({
+      session: sessionsTable,
+      user: usersTable
+    })
+      .from(sessionsTable)
+      .innerJoin(usersTable, eq(sessionsTable.user_id, usersTable.id))
+      .where(
+        and(
+          eq(sessionsTable.id, input.session_id),
+          gte(sessionsTable.expires_at, new Date())
+        )
+      )
+      .execute();
+
+    if (results.length === 0) {
+      return {
         valid: false,
         user: null
+      };
+    }
+
+    const result = results[0];
+    const user = result.user;
+
+    // Check if user is still active
+    if (!user.is_active) {
+      return {
+        valid: false,
+        user: null
+      };
+    }
+
+    return {
+      valid: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        full_name: user.full_name,
+        is_active: user.is_active
+      }
     };
+  } catch (error) {
+    console.error('Session verification failed:', error);
+    throw error;
+  }
 }
 
 export async function logout(sessionId: string): Promise<boolean> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to:
-    // 1. Remove the session from the database
-    // 2. Return success status
-    
+  try {
+    // Delete session from database
+    await db.delete(sessionsTable)
+      .where(eq(sessionsTable.id, sessionId))
+      .execute();
+
     return true;
+  } catch (error) {
+    console.error('Logout failed:', error);
+    throw error;
+  }
 }
